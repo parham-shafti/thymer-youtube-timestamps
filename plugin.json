@@ -1,0 +1,6 @@
+{
+	"ver": 1,
+	"name": "YouTube Timestamps",
+	"icon": "brand-youtube",
+	"description": "Time-coded notes for embedded YouTube videos. Cmd/Ctrl+Shift+T starts a new note row stamped with the current playback position; click a timestamp to jump the player there."
+}
