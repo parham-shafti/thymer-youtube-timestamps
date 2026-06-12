@@ -1,0 +1,19 @@
+/*
+ * YouTube Timestamps — wider video player
+ *
+ * Thymer's default YouTube embed is fairly small for following along while
+ * taking notes. This makes the player wider and keeps a 16:9 shape.
+ *
+ * Want a different size? Change the `width` value below — for example
+ * 640px, 960px, 1080px, or 100% (as wide as the page column allows).
+ * `max-width: 100%` keeps the player from overflowing on narrow windows,
+ * so you can set a generous width safely.
+ *
+ * Prefer Thymer's default size? Just delete this rule (or empty the
+ * Custom CSS tab) — the plugin works exactly the same without it.
+ */
+html[data-theme] .media-widget-youtube {
+    width: 800px;       /* <-- change this to resize the player */
+    max-width: 100%;
+    aspect-ratio: 16 / 9;
+}

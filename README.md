@@ -31,11 +31,16 @@ Good to know:
 2. In the plugin's dialog, go to the code editor (click **Edit as Code** if you see the settings view).
 3. In the **Custom Code** tab, replace the contents with [`plugin.js`](plugin.js).
 4. In the **Configuration** tab, replace the contents with [`plugin.json`](plugin.json).
-5. Click **Save**.
+5. In the **Custom CSS** tab, paste [`plugin.css`](plugin.css) — optional but recommended, see below.
+6. Click **Save**.
 
 Don't enable Hot Reload (it's a development feature and can leave the plugin in a state where saved configuration stops persisting).
 
-To change the hotkey, edit `HOTKEY_CODE` near the top of `plugin.js` (it takes a [KeyboardEvent code](https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values) like `KeyT`); the modifier combination is Cmd/Ctrl+Shift.
+### Customizing
+
+**Player size.** Thymer's default YouTube embed is small for watching while taking notes, so [`plugin.css`](plugin.css) widens it to 800px in 16:9. Want a different size? Edit the `width` value in the Custom CSS tab — for example `960px` or `100%` (`max-width: 100%` is already set, so a generous width is safe on narrow windows). Prefer Thymer's default size? Skip the CSS entirely; the plugin works the same without it.
+
+**Hotkey.** Edit `HOTKEY_CODE` near the top of `plugin.js` (it takes a [KeyboardEvent code](https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values) like `KeyT`); the modifier combination is Cmd/Ctrl+Shift.
 
 ## How it works
 
