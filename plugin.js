@@ -8,6 +8,11 @@
  * timestamped row. Clicking a timestamp seeks the embedded player there;
  * Cmd+click opens the link in the browser as a normal YouTube deep link.
  *
+ * Command palette: "Pin video while scrolling" toggles a sticky player
+ * that stays at the top of the panel while you scroll your notes. Off by
+ * default; the choice is remembered. It's a single CSS rule the browser
+ * handles natively, so it costs nothing on scroll.
+ *
  * Implementation notes (hard-won):
  * - The editor only accepts trusted input, so the timestamp is written via
  *   the SDK as a FRESH row (never into the row being edited — row identity
@@ -38,6 +43,9 @@ class Plugin extends AppPlugin {
     stampCounter = 0;
     lastItemGuid = null;   // last stamped row, fallback anchor for ordering
     lastRecordGuid = null;
+    stickyOn = false;      // pin the video to the top of the panel while scrolling
+    stickyStyleEl = null;
+    toggleCmd = null;
 
     onLoad() {
         this.msgHandler = (e) => this.onPlayerMessage(e);
@@ -73,6 +81,12 @@ class Plugin extends AppPlugin {
         this.observer = new MutationObserver(() => this.schedulePatch());
         this.observer.observe(document.body, { childList: true, subtree: true });
         this.patchAllEmbeds();
+
+        // restore the saved sticky preference and register its toggle command
+        const custom = (this.getConfiguration() || {}).custom || {};
+        this.stickyOn = !!custom.sticky;
+        this.applySticky();
+        this.registerToggleCommand();
     }
 
     onUnload() {
@@ -84,9 +98,66 @@ class Plugin extends AppPlugin {
         if (this.observer) this.observer.disconnect();
         if (this.patchTimer) clearTimeout(this.patchTimer);
         if (this.pending && this.pending.ghostEl) this.pending.ghostEl.remove();
+        if (this.toggleCmd) this.toggleCmd.remove();
+        if (this.stickyStyleEl) this.stickyStyleEl.remove();
         this.pending = null;
         this.buffering = false;
         this.players.clear();
+    }
+
+    // ---- sticky video toggle ----------------------------------------------
+
+    // One CSS rule, injected or cleared. `:has()` targets only YouTube rows,
+    // so images and other media keep scrolling normally. The browser handles
+    // sticky on the compositor, so there is no scroll handler and no cost.
+    applySticky() {
+        if (!this.stickyStyleEl) {
+            this.stickyStyleEl = document.createElement('style');
+            this.stickyStyleEl.id = 'yt-ts-sticky';
+            document.head.appendChild(this.stickyStyleEl);
+        }
+        this.stickyStyleEl.textContent = this.stickyOn
+            ? 'html[data-theme] .listitem-media:has(iframe.media-widget-youtube)'
+              + '{position:sticky;top:8px;z-index:50;}'
+            : '';
+    }
+
+    // The command label can't be changed in place, so re-create it to show
+    // the action that the current state offers.
+    registerToggleCommand() {
+        if (this.toggleCmd) this.toggleCmd.remove();
+        this.toggleCmd = this.ui.addCommandPaletteCommand({
+            label: this.stickyOn
+                ? 'YouTube: Unpin video while scrolling'
+                : 'YouTube: Pin video while scrolling',
+            icon: 'ti-pin',
+            onSelected: () => this.toggleSticky(),
+        });
+    }
+
+    toggleSticky() {
+        this.stickyOn = !this.stickyOn;
+        this.applySticky();
+        this.registerToggleCommand();
+        this.persistSticky();
+    }
+
+    // Remember the toggle across restarts. saveConfiguration writes the
+    // running config (including `custom`); on next load onLoad reads it back.
+    async persistSticky() {
+        try {
+            const conf = this.getConfiguration() || {};
+            conf.custom = conf.custom || {};
+            conf.custom.sticky = this.stickyOn;
+            const api = this.data || (typeof data !== 'undefined' ? data : null);
+            if (!api) return;
+            const myGuid = this.getGuid ? this.getGuid() : null;
+            const all = await api.getAllGlobalPlugins();
+            const self = all.find((g) => (g.guid || (g.getGuid && g.getGuid())) === myGuid);
+            if (self && self.saveConfiguration) await self.saveConfiguration(conf);
+        } catch (e) {
+            this.trace('persist-failed', { msg: String(e) });
+        }
     }
 
     // ---- player bridge -------------------------------------------------

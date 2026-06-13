@@ -18,6 +18,10 @@ YouTube Timestamps is a [Thymer](https://thymer.com) plugin for taking time-code
 4. When the next thought comes, press the hotkey again — each press starts the next timestamped row. No Enter needed between notes.
 5. **Click** a timestamp to jump the player to that moment. **⌘+click** (Ctrl+click) opens the link on YouTube in your browser instead.
 
+### Keep the video in view while you scroll
+
+Run **"YouTube: Pin video while scrolling"** from the command palette (`Cmd/Ctrl+P`) to pin the player to the top of the panel, so it stays put as you scroll down through your notes. Run the command again to unpin it. The setting is remembered, and it's off by default so the video sits in the normal flow until you ask for it.
+
 Good to know:
 
 - Timestamps read the player's position, so a stamp reads `0:00` until the video has started playing at least once.
