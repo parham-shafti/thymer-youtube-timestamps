@@ -22,5 +22,5 @@ html[data-theme] .media-widget-youtube {
  * Note: keeping the video pinned to the top while you scroll (a "sticky"
  * player) is not set here. It's a toggle in the command palette instead,
  * so you can turn it on only while taking notes and off otherwise. Run
- * "YouTube: Pin video while scrolling" from the palette (Cmd/Ctrl+P).
+ * "YouTube: Toggle pin video while scrolling" from the palette (Cmd/Ctrl+P).
  */

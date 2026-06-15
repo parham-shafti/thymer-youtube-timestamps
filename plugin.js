@@ -8,7 +8,7 @@
  * timestamped row. Clicking a timestamp seeks the embedded player there;
  * Cmd+click opens the link in the browser as a normal YouTube deep link.
  *
- * Command palette: "Pin video while scrolling" toggles a sticky player
+ * Command palette: "Toggle pin video while scrolling" toggles a sticky player
  * that stays at the top of the panel while you scroll your notes. Off by
  * default; the choice is remembered. It's a single CSS rule the browser
  * handles natively, so it costs nothing on scroll.
@@ -122,14 +122,12 @@ class Plugin extends AppPlugin {
             : '';
     }
 
-    // The command label can't be changed in place, so re-create it to show
-    // the action that the current state offers.
+    // A single static command: "Toggle" reads as a persistent setting, so the
+    // label stays fixed rather than flipping between Pin/Unpin.
     registerToggleCommand() {
         if (this.toggleCmd) this.toggleCmd.remove();
         this.toggleCmd = this.ui.addCommandPaletteCommand({
-            label: this.stickyOn
-                ? 'YouTube: Unpin video while scrolling'
-                : 'YouTube: Pin video while scrolling',
+            label: 'YouTube: Toggle pin video while scrolling',
             icon: 'ti-pin',
             onSelected: () => this.toggleSticky(),
         });
@@ -138,7 +136,6 @@ class Plugin extends AppPlugin {
     toggleSticky() {
         this.stickyOn = !this.stickyOn;
         this.applySticky();
-        this.registerToggleCommand();
         this.persistSticky();
     }
 
