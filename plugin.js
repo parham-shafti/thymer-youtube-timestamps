@@ -301,6 +301,40 @@ class Plugin extends AppPlugin {
         return d ? d.textContent.replace(/\u00a0/g, ' ').trim() : '';
     }
 
+    // A journal day that has not MATERIALIZED yet (tomorrow and later) has a
+    // SYNTHETIC page guid — S-<collectionGuid>-P…-YYYYMMDD — that
+    // data.getRecord() cannot resolve, so a stamp on a future day's rows fell
+    // through to getActiveRecord() and landed on the WRONG day's page. Parse
+    // the date out of the S-guid and go in through getJournalRecord. The ref
+    // MUST carry the USER guid — the collection guid silently creates a
+    // duplicate journal page. Same fix as reschedule's journalRecord().
+    async journalRecordFromGuid(pageGuid) {
+        const m = /^S-([A-Z0-9]+)-.+-(\d{8})$/.exec(pageGuid || '');
+        if (!m) return null;
+        const api = this.data || (typeof data !== 'undefined' ? data : null);
+        if (!api) return null;
+        try {
+            const cols = await api.getAllCollections();
+            const journals = (cols || []).filter((c) => { try { return c.isJournalPlugin && c.isJournalPlugin(); } catch (e) { return false; } });
+            const col = journals.find((c) => { try { return (c.getGuid ? c.getGuid() : null) === m[1]; } catch (e) { return false; } }) || journals[0];
+            if (!col) return null;
+            let userGuid = null;
+            try { userGuid = (window.g_universe && window.g_universe.userId) || null; } catch (e) {}
+            if (!userGuid) {
+                try {
+                    const us = await api.getActiveUsers();
+                    const self = (us || []).find((u) => u && (u.is_self || (u._getRow && u._getRow().is_self))) || (us || [])[0];
+                    userGuid = self && (self.guid || (self._getRow && self._getRow().guid));
+                } catch (e) {}
+            }
+            if (!userGuid) return null;
+            const wsGuid = (window.g_universe && window.g_universe.workspaceGuid) || null;
+            const y = +m[2].slice(0, 4), mo = +m[2].slice(4, 6) - 1, d = +m[2].slice(6, 8);
+            // getJournalRecord only ever calls .toDate() on its date argument
+            return await col.getJournalRecord({ workspaceGuid: wsGuid, guid: userGuid }, { toDate: () => new Date(y, mo, d) });
+        } catch (e) { return null; }
+    }
+
     async insertTimestamp() {
         const caretLine = this.findCaretLine();
         const panelEl = (caretLine && caretLine.closest('.editor-panel')) || document;
@@ -323,6 +357,11 @@ class Plugin extends AppPlugin {
         const lvEl = caretLine && caretLine.closest('.listview-items');
         if (lvEl && lvEl.dataset.guid && typeof data !== 'undefined') {
             record = data.getRecord(lvEl.dataset.guid);
+        }
+        if (!record && lvEl && lvEl.dataset.guid) {
+            // future journal day (synthetic S-guid): resolve it properly BEFORE
+            // the active-record fallback, which would stamp the wrong day
+            record = await this.journalRecordFromGuid(lvEl.dataset.guid);
         }
         if (!record) {
             const panel = this.ui.getActivePanel();
