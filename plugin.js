@@ -44,6 +44,7 @@ class Plugin extends AppPlugin {
     quoteItem = null;      // the status bar marker while a quote runs
     quoteToast = null;
     quoteRemindTimer = null;
+    quoteTick = null;
     quoteStyleEl = null;
     transcripts = new Map(); // videoId -> Promise of timed caption segments
     observer = null;
@@ -377,17 +378,31 @@ class Plugin extends AppPlugin {
         if (!this.quoteStyleEl) {
             this.quoteStyleEl = document.createElement('style');
             this.quoteStyleEl.id = 'yt-ts-quote';
-            this.quoteStyleEl.textContent = '.ytts-rec{color:#ff4d4f;font-weight:600;display:inline-flex;align-items:center;gap:4px}'
-                + '.ytts-rec .ti{animation:ytts-pulse 1.6s ease-in-out infinite}'
+            // colour only: the item keeps the status bar's own layout
+            this.quoteStyleEl.textContent = '.statusbar-item.ytts-rec,.statusbar-item.ytts-rec .statusbar-item--label'
+                + '{color:#ff4d4f;font-weight:600}'
+                // Thymer's icon font has no filled dot, so the recording dot is drawn
+                + '.statusbar-item.ytts-rec .ti::before{content:"";display:block;width:8px;height:8px;margin:2px;'
+                + 'border-radius:50%;background:currentColor}'
+                + '.statusbar-item.ytts-rec .ti{animation:ytts-pulse 1.6s ease-in-out infinite}'
                 + '@keyframes ytts-pulse{50%{opacity:.3}}';
             document.head.appendChild(this.quoteStyleEl);
         }
         this.quoteItem = this.ui.addStatusBarItem({
-            htmlLabel: '<span class="ytts-rec"><span class="ti ti-point-filled"></span>Quote from '
-                + this.formatTime(Math.floor(time)) + '</span>',
-            tooltip: 'Cmd+Shift+U ends the quote and inserts it. Click to cancel.',
+            icon: 'ti-point',
+            label: 'Transcription 0:00',
+            tooltip: 'Transcription from ' + this.formatTime(Math.floor(time))
+                + '. Cmd+Shift+U ends it and inserts it. Click to cancel.',
             onClick: () => this.clearQuoteMark(),
         });
+        const el = this.quoteItem.getElement && this.quoteItem.getElement();
+        if (el) el.classList.add('ytts-rec');
+        // how long it has run, in video time: it stands still while paused
+        this.quoteTick = setInterval(() => {
+            const m = this.quoteMark, s = m && this.players.get(m.iframe);
+            if (!s || !this.quoteItem) return;
+            this.quoteItem.setLabel('Transcription ' + this.formatTime(Math.floor(Math.abs(this.nowTime(s) - m.time))));
+        }, 500);
         this.scheduleQuoteReminder();
     }
 
@@ -397,12 +412,12 @@ class Plugin extends AppPlugin {
             if (!this.quoteMark) return;
             if (this.quoteToast) this.quoteToast.destroy();
             this.quoteToast = this.ui.addToaster({
-                title: 'Quote still running',
+                title: 'Transcription still running',
                 message: 'Started at ' + this.formatTime(Math.floor(this.quoteMark.time))
                     + '. Cmd+Shift+U ends it and inserts what was said.',
                 dismissible: true,
                 primaryLabel: 'Keep going',
-                secondaryLabel: 'Cancel quote',
+                secondaryLabel: 'Cancel transcription',
                 onPrimary: () => this.scheduleQuoteReminder(),
                 onSecondary: () => this.clearQuoteMark(),
             });
@@ -414,6 +429,8 @@ class Plugin extends AppPlugin {
         this.quoteMark = null;
         clearTimeout(this.quoteRemindTimer);
         this.quoteRemindTimer = null;
+        clearInterval(this.quoteTick);
+        this.quoteTick = null;
         if (this.quoteItem) { this.quoteItem.remove(); this.quoteItem = null; }
         if (this.quoteToast) { try { this.quoteToast.destroy(); } catch (e) {} this.quoteToast = null; }
     }
@@ -444,7 +461,7 @@ class Plugin extends AppPlugin {
         // skipping back past the start still quotes the stretch between the two presses
         const start = Math.min(m.time, now), end = Math.max(m.time, now);
         if (end - start < 1) {
-            this.toast('Quote cancelled', 'Less than a second was marked.');
+            this.toast('Transcription cancelled', 'Less than a second was marked.');
             return;
         }
         let segs;
