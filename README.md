@@ -22,6 +22,15 @@ YouTube Timestamps is a [Thymer](https://thymer.com) plugin for taking time-code
 
 Run **"YouTube: Toggle pin video while scrolling"** from the command palette (`Cmd/Ctrl+P`) to pin the player to the top of the panel, so it stays put as you scroll down through your notes. Run the command again to unpin it. The setting is remembered, and it's off by default so the video sits in the normal flow until you ask for it.
 
+### Control the player from the keyboard
+
+- **⌘⇧Space** (Ctrl+Shift+Space) plays or pauses the video.
+- **⌘⇧←** / **⌘⇧→** (Ctrl+Shift+Left/Right) skip back or forward 10 seconds. They only act while the video is playing, so whatever these keys normally do in your Thymer works as usual when it is paused.
+
+### Quote what was said
+
+Press **⌘⇧U** (Ctrl+Shift+U) and what was said since you last pressed play (or last skipped) is added as a quote row at your caret. The words come from the video's own captions, including YouTube's automatic ones, fetched through [Supadata](https://supadata.ai). It needs a Supadata API key: copy the key, then run **"YouTube: Set transcript API key from clipboard"** from the command palette. The transcript is fetched once per video, so repeated quotes cost nothing extra. A video with no captions at all cannot be quoted.
+
 Good to know:
 
 - Timestamps read the player's position, so a stamp reads `0:00` until the video has started playing at least once.

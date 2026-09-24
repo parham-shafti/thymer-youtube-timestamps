@@ -8,6 +8,14 @@
  * timestamped row. Clicking a timestamp seeks the embedded player there;
  * Cmd+click opens the link in the browser as a normal YouTube deep link.
  *
+ * Keys for the player: Cmd+Shift+Left / Right skip back / forward 10 seconds
+ * while the video plays, Cmd+Shift+Space plays or pauses it.
+ *
+ * Cmd+Shift+U quotes what was said since the video last started playing (or
+ * last jumped) as a quote row at the caret. The words come from the video's
+ * own captions through Supadata (supadata.ai); "YouTube: Set transcript API
+ * key from clipboard" in the command palette stores the key.
+ *
  * Command palette: "Toggle pin video while scrolling" toggles a sticky player
  * that stays at the top of the panel while you scroll your notes. Off by
  * default; the choice is remembered. It's a single CSS rule the browser
@@ -28,7 +36,8 @@ class Plugin extends AppPlugin {
     // hotkey: Cmd+Shift+T (Mac) / Ctrl+Shift+T elsewhere
     static HOTKEY_CODE = 'KeyT';
 
-    players = new Map();   // iframe element -> { videoId, lastTime }
+    players = new Map();   // iframe element -> { videoId, lastTime, lastAt, playing, playStart }
+    transcripts = new Map(); // videoId -> Promise of timed caption segments
     observer = null;
     msgHandler = null;
     keyHandler = null;
@@ -46,8 +55,10 @@ class Plugin extends AppPlugin {
     stickyOn = false;      // pin the video to the top of the panel while scrolling
     stickyStyleEl = null;
     toggleCmd = null;
+    keyCmd = null;
 
     onLoad() {
+        window.__yttsGen = (window.__yttsGen || 0) + 1; // dev: proves a Hot Reload push landed
         this.msgHandler = (e) => this.onPlayerMessage(e);
         window.addEventListener('message', this.msgHandler);
 
@@ -87,6 +98,11 @@ class Plugin extends AppPlugin {
         this.stickyOn = !!custom.sticky;
         this.applySticky();
         this.registerToggleCommand();
+        this.keyCmd = this.ui.addCommandPaletteCommand({
+            label: 'YouTube: Set transcript API key from clipboard',
+            icon: 'ti-key',
+            onSelected: () => this.setKeyFromClipboard(),
+        });
     }
 
     onUnload() {
@@ -99,6 +115,7 @@ class Plugin extends AppPlugin {
         if (this.patchTimer) clearTimeout(this.patchTimer);
         if (this.pending && this.pending.ghostEl) this.pending.ghostEl.remove();
         if (this.toggleCmd) this.toggleCmd.remove();
+        if (this.keyCmd) this.keyCmd.remove();
         if (this.stickyStyleEl) this.stickyStyleEl.remove();
         this.pending = null;
         this.buffering = false;
@@ -139,13 +156,16 @@ class Plugin extends AppPlugin {
         this.persistSticky();
     }
 
-    // Remember the toggle across restarts. saveConfiguration writes the
+    persistSticky() {
+        return this.saveCustom({ sticky: this.stickyOn });
+    }
+
+    // Remember settings across restarts. saveConfiguration writes the
     // running config (including `custom`); on next load onLoad reads it back.
-    async persistSticky() {
+    async saveCustom(patch) {
         try {
             const conf = this.getConfiguration() || {};
-            conf.custom = conf.custom || {};
-            conf.custom.sticky = this.stickyOn;
+            conf.custom = Object.assign(conf.custom || {}, patch);
             const api = this.data || (typeof data !== 'undefined' ? data : null);
             if (!api) return;
             const myGuid = this.getGuid ? this.getGuid() : null;
@@ -180,7 +200,7 @@ class Plugin extends AppPlugin {
                 iframe.src = iframe.src + (iframe.src.includes('?') ? '&' : '?')
                     + 'enablejsapi=1&origin=' + location.origin;
             }
-            this.players.set(iframe, { videoId: m[1], lastTime: 0 });
+            this.players.set(iframe, { videoId: m[1], lastTime: 0, lastAt: 0, playing: false, playStart: null });
             // handshake (retry a few times while the player boots)
             let tries = 0;
             const hello = () => {
@@ -200,10 +220,29 @@ class Plugin extends AppPlugin {
         if (typeof e.data !== 'string' || !/youtube/.test(e.origin)) return;
         let d;
         try { d = JSON.parse(e.data); } catch (err) { return; }
-        if (!d || !d.info || d.info.currentTime === undefined) return;
+        if (!d) return;
+        const info = d.event === 'onStateChange' ? { playerState: d.info } : d.info;
+        if (!info || typeof info !== 'object') return;
         for (const [iframe, state] of this.players) {
             if (iframe.contentWindow === e.source) {
-                state.lastTime = d.info.currentTime;
+                if (info.currentTime !== undefined) {
+                    // reports stream only while the video runs, so a moving clock means it
+                    // plays even when no state arrived (a reloaded plugin gets 'alreadyInitialized')
+                    if (info.currentTime !== state.lastTime && Date.now() - state.lastAt < 1500) state.playing = true;
+                    // a clock that is not where it should be has jumped (a seek, or a
+                    // restart after a pause): what plays from here is a new stretch
+                    if (state.playStart === null || Math.abs(info.currentTime - this.nowTime(state)) > 2) {
+                        state.playStart = info.currentTime;
+                    }
+                    state.lastTime = info.currentTime;
+                    state.lastAt = Date.now();
+                }
+                // 1 = playing, 3 = buffering (right after a seek)
+                if (info.playerState !== undefined) {
+                    const playing = info.playerState === 1 || info.playerState === 3;
+                    if (playing && !state.playing) state.playStart = state.lastTime;
+                    state.playing = playing;
+                }
                 break;
             }
         }
@@ -220,6 +259,12 @@ class Plugin extends AppPlugin {
 
     onKeyDown(e) {
         const mod = e.metaKey || e.ctrlKey;
+        if (mod && e.shiftKey && !e.altKey && e.code === 'KeyU' && this.players.size) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            this.insertTranscript().catch(err => this.trace('error', { msg: String(err) }));
+            return;
+        }
         if (mod && e.shiftKey && e.code === Plugin.HOTKEY_CODE) {
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -232,6 +277,17 @@ class Plugin extends AppPlugin {
                 this.buffering = false;
                 this.trace('error', { msg: String(err) });
             });
+            return;
+        }
+        if (mod && e.shiftKey && !e.altKey
+            && (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'Space')) {
+            // a plugin's own text field keeps its selection keys
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.isContentEditable)) return;
+            if (this.onMediaKey(e.code)) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
             return;
         }
         // while the new row settles, capture the keystrokes that belong on it
@@ -254,6 +310,142 @@ class Plugin extends AppPlugin {
                 this.renderGhost();
             }
         }
+    }
+
+    // Cmd+Shift+Left/Right skip 10 s, Cmd+Shift+Space plays or pauses. The arrows
+    // are Back/Forward in the app, so they are only taken while a video plays; Space
+    // is taken whenever there is a video to start. Returns true when it acted.
+    onMediaKey(code) {
+        const playing = this.playingPlayer();
+        if (code === 'Space') {
+            if (playing) {
+                this.sendCommand(playing[0], 'pauseVideo');
+                playing[1].playing = false; // a quick second press plays again
+                return true;
+            }
+            const iframe = this.pickPlayer(this.findCaretLine());
+            if (!iframe) return false;
+            this.sendCommand(iframe, 'playVideo');
+            return true;
+        }
+        if (!playing) return false;
+        const [iframe, s] = playing;
+        const t = Math.max(0, this.nowTime(s) + (code === 'ArrowRight' ? 10 : -10));
+        this.sendCommand(iframe, 'seekTo', [t, true]);
+        s.lastTime = t; // so a quick second press skips from here
+        s.lastAt = Date.now();
+        s.playStart = t;
+        return true;
+    }
+
+    // [iframe, state] of the video that is playing, if any. The reports stop
+    // when the video stops, so a silent player is not playing.
+    playingPlayer() {
+        return [...this.players].find(([f, s]) => f.isConnected && s.playing && Date.now() - s.lastAt < 2000);
+    }
+
+    // where the video is now: the player reports its time a few times a
+    // second while it plays, so extrapolate from the last report
+    nowTime(s) {
+        return s.playing && s.lastAt ? s.lastTime + (Date.now() - s.lastAt) / 1000 : s.lastTime;
+    }
+
+    // ---- transcript quote -------------------------------------------------
+
+    toast(title, message) {
+        try { this.ui.addToaster({ title, message, dismissible: true, autoDestroyTime: 6000 }); } catch (e) {}
+    }
+
+    async setKeyFromClipboard() {
+        let key = '';
+        try { key = (await navigator.clipboard.readText()).trim(); } catch (e) {}
+        if (!key || /\s/.test(key) || key.length > 200) {
+            this.toast('No API key on the clipboard', 'Copy your Supadata API key, then run this command again.');
+            return;
+        }
+        this.transcripts.clear();
+        this.toast('Transcript API key saved', 'Cmd+Shift+U quotes what was said since you pressed play.');
+        await this.saveCustom({ supadataKey: key });
+    }
+
+    // Cmd+Shift+U: what was said from the last play (or jump) until now, as a
+    // quote row at the caret
+    async insertTranscript() {
+        const key = ((this.getConfiguration() || {}).custom || {}).supadataKey;
+        if (!key) {
+            this.toast('Add a transcript API key first',
+                'Copy your Supadata API key, then run "YouTube: Set transcript API key from clipboard".');
+            return;
+        }
+        const caretLine = this.findCaretLine();
+        const playing = this.playingPlayer();
+        const iframe = playing ? playing[0] : this.pickPlayer(caretLine);
+        if (!iframe) { this.trace('no-player'); return; }
+        const s = this.players.get(iframe);
+        const end = this.nowTime(s);
+        const start = s.playStart === null ? end : s.playStart;
+        if (end - start < 1) {
+            this.toast('Nothing played yet', 'Play the video, then press Cmd+Shift+U to quote what was said.');
+            return;
+        }
+        let segs;
+        try {
+            segs = await this.transcriptFor(s.videoId, key);
+        } catch (err) {
+            this.toast('No transcript', err.message || String(err));
+            return;
+        }
+        let text = segs
+            .filter(g => g.offset < end * 1000 && g.offset + g.duration > start * 1000)
+            .map(g => g.text).join(' ').replace(/\s+/g, ' ').trim();
+        if (text.includes('&')) text = new DOMParser().parseFromString(text, 'text/html').documentElement.textContent;
+        if (!text) {
+            this.toast('Nothing was said', this.formatTime(Math.floor(start)) + ' to '
+                + this.formatTime(Math.floor(end)) + ' has no captions.');
+            return;
+        }
+        const at = await this.insertPoint(caretLine);
+        if (!at) { this.trace('no-record'); return; }
+        const item = await at.record.createLineItem(at.parent, at.anchor, 'quote');
+        if (!item) { this.trace('create-row-failed'); return; }
+        item.setSegments([{ type: 'text', text }]);
+        this.trace('quoted', { from: Math.floor(start), to: Math.floor(end), chars: text.length });
+        // keep typing where you were
+        try { window.g_virtual_input.$textarea.focus(); } catch (e) {}
+    }
+
+    // one Supadata call per video: the whole timed transcript, cached
+    transcriptFor(videoId, key) {
+        if (!this.transcripts.has(videoId)) {
+            this.transcripts.set(videoId, this.fetchTranscript(videoId, key).catch((err) => {
+                this.transcripts.delete(videoId);
+                throw err;
+            }));
+        }
+        return this.transcripts.get(videoId);
+    }
+
+    // mode=native takes the captions the video already has (no AI transcription)
+    async fetchTranscript(videoId, key) {
+        const api = 'https://api.supadata.ai/v1/transcript';
+        const headers = { 'x-api-key': key };
+        let res = await fetch(api + '?mode=native&url='
+            + encodeURIComponent('https://www.youtube.com/watch?v=' + videoId), { headers });
+        let body = await res.json().catch(() => ({}));
+        // a long video comes back as a job to poll
+        if (res.status === 202 && body.jobId) {
+            const job = body.jobId;
+            for (let i = 0; i < 60 && !Array.isArray(body.content); i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                res = await fetch(api + '/' + job, { headers });
+                body = await res.json().catch(() => ({}));
+                if (body.status === 'failed') throw new Error(body.error || 'Supadata could not make the transcript.');
+            }
+        }
+        if (res.status === 401) throw new Error('Supadata refused the API key.');
+        if (!res.ok || body.error) throw new Error(body.message || body.error || 'Supadata answered ' + res.status + '.');
+        if (!Array.isArray(body.content) || !body.content.length) throw new Error('This video has no captions.');
+        return body.content;
     }
 
     // ---- timestamp insertion ----------------------------------------------
@@ -327,7 +519,9 @@ class Plugin extends AppPlugin {
                     userGuid = self && (self.guid || (self._getRow && self._getRow().guid));
                 } catch (e) {}
             }
-            if (!userGuid) return null;
+            // ref.guid is interpolated into the record id, so a non-string mints a page
+            // called S-<coll>-[object Object]-0-<date> that breaks Markdown Mirror sync
+            if (typeof userGuid !== 'string' || !userGuid) return null;
             const wsGuid = (window.g_universe && window.g_universe.workspaceGuid) || null;
             const y = +m[2].slice(0, 4), mo = +m[2].slice(4, 6) - 1, d = +m[2].slice(6, 8);
             // getJournalRecord only ever calls .toDate() on its date argument
@@ -335,12 +529,10 @@ class Plugin extends AppPlugin {
         } catch (e) { return null; }
     }
 
-    async insertTimestamp() {
-        const caretLine = this.findCaretLine();
+    // the player a key acts on: nearest embed above the caret, else first on screen
+    pickPlayer(caretLine) {
         const panelEl = (caretLine && caretLine.closest('.editor-panel')) || document;
         const caretY = caretLine ? caretLine.getBoundingClientRect().y : Infinity;
-
-        // pick the player: nearest embed above the caret, else first on screen
         let best = null, bestY = -Infinity, first = null;
         for (const iframe of this.players.keys()) {
             if (!iframe.isConnected || !panelEl.contains(iframe)) continue;
@@ -348,9 +540,40 @@ class Plugin extends AppPlugin {
             const y = iframe.getBoundingClientRect().y;
             if (y < caretY && y > bestY) { bestY = y; best = iframe; }
         }
-        const iframe = best || first;
+        return best || first;
+    }
+
+    async insertTimestamp() {
+        const caretLine = this.findCaretLine();
+        const iframe = this.pickPlayer(caretLine);
         if (!iframe) { this.buffering = false; this.trace('no-player'); return; }
 
+        const at = await this.insertPoint(caretLine);
+        if (!at) { this.buffering = false; this.trace('no-record'); return; }
+        const { record, parent, anchor } = at;
+
+        const state = this.players.get(iframe);
+        const secs = Math.floor(state.lastTime || 0);
+        const label = this.formatTime(secs);
+        const url = 'https://www.youtube.com/watch?v=' + state.videoId + '&t=' + secs + 's'
+            + '&yt-ts=' + (++this.stampCounter); // unique: finds the rendered row
+
+        const item = await record.createLineItem(parent, anchor, 'text');
+        if (!item) { this.buffering = false; this.trace('create-row-failed'); return; }
+        item.setSegments([
+            { type: 'linkobj', text: { link: url, title: label } },
+            { type: 'text', text: ' - ' },
+        ]);
+        this.lastItemGuid = item.guid;
+        this.lastRecordGuid = this.recGuid(record);
+        this.pending = { item, url, label, written: '', ghostEl: null };
+        this.trace('inserted', { label });
+        this.settlePending(this.pending, 0);
+    }
+
+    // Where a new row goes: the record that owns the caret row, and the row to
+    // insert after (above the caret row when that row is empty). Null: no record.
+    async insertPoint(caretLine) {
         // the record that owns the caret row (matters in the Journal, where
         // several day-records are stacked in one panel)
         let record = null;
@@ -367,13 +590,7 @@ class Plugin extends AppPlugin {
             const panel = this.ui.getActivePanel();
             record = panel && panel.getActiveRecord();
         }
-        if (!record) { this.buffering = false; this.trace('no-record'); return; }
-
-        const state = this.players.get(iframe);
-        const secs = Math.floor(state.lastTime || 0);
-        const label = this.formatTime(secs);
-        const url = 'https://www.youtube.com/watch?v=' + state.videoId + '&t=' + secs + 's'
-            + '&yt-ts=' + (++this.stampCounter); // unique: finds the rendered row
+        if (!record) return null;
 
         // resolve the caret row in the data layer (its data-guid can lag
         // while a recent edit commits) — fall back to the last stamped row
@@ -405,17 +622,7 @@ class Plugin extends AppPlugin {
         const parent = anchor && anchor.parent_guid
             ? (items.find(i => i.guid === anchor.parent_guid) || null)
             : null;
-        const item = await record.createLineItem(parent, anchor, 'text');
-        if (!item) { this.buffering = false; this.trace('create-row-failed'); return; }
-        item.setSegments([
-            { type: 'linkobj', text: { link: url, title: label } },
-            { type: 'text', text: ' - ' },
-        ]);
-        this.lastItemGuid = item.guid;
-        this.lastRecordGuid = this.recGuid(record);
-        this.pending = { item, url, label, written: '', ghostEl: null };
-        this.trace('inserted', { label });
-        this.settlePending(this.pending, 0);
+        return { record, parent, anchor };
     }
 
     // Poll until the new row is on screen and shows the buffered text, then
