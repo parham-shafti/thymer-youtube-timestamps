@@ -29,7 +29,7 @@ Run **"YouTube: Toggle pin video while scrolling"** from the command palette (`C
 
 ### Quote what was said
 
-Press **⌘⇧U** (Ctrl+Shift+U) where the quote should start, and **⌘⇧U** again where it should end: what was said in between is added as a quote row at your caret. Two presses within a second cancel the quote. The words come from the video's own captions, including YouTube's automatic ones, fetched through [Supadata](https://supadata.ai). It needs a Supadata API key: copy the key, then run **"YouTube: Set transcript API key from clipboard"** from the command palette. The transcript is fetched once per video (already at the first press, so the quote appears at once), and repeated quotes cost nothing extra. A video with no captions at all cannot be quoted.
+Press **⌘⇧U** (Ctrl+Shift+U) where the quote should start, and **⌘⇧U** again where it should end: what was said in between is added as a quote row at your caret, starting with the start and end times as clickable timestamps (`12:40 - 13:05: ...`). While a quote runs, a red marker in the status bar shows where it started; click it to cancel. Nothing ends a quote on its own: after 5 minutes a reminder asks whether to keep going (another 5 minutes) or cancel. Two presses within a second also cancel. The words come from the video's own captions, including YouTube's automatic ones, fetched through [Supadata](https://supadata.ai). It needs a Supadata API key: copy the key, then run **"YouTube: Set transcript API key from clipboard"** from the command palette. The transcript is fetched once per video (already at the first press, so the quote appears at once), and repeated quotes cost nothing extra. A video with no captions at all cannot be quoted.
 
 Good to know:
 

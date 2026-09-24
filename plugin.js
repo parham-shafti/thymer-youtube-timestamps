@@ -38,7 +38,13 @@ class Plugin extends AppPlugin {
     static HOTKEY_CODE = 'KeyT';
 
     players = new Map();   // iframe element -> { videoId, lastTime, lastAt, playing }
+    static QUOTE_REMIND_MS = 5 * 60 * 1000; // a running quote asks again after this
+
     quoteMark = null;      // { iframe, time } between the two Cmd+Shift+U presses
+    quoteItem = null;      // the status bar marker while a quote runs
+    quoteToast = null;
+    quoteRemindTimer = null;
+    quoteStyleEl = null;
     transcripts = new Map(); // videoId -> Promise of timed caption segments
     observer = null;
     msgHandler = null;
@@ -119,6 +125,8 @@ class Plugin extends AppPlugin {
         if (this.toggleCmd) this.toggleCmd.remove();
         if (this.keyCmd) this.keyCmd.remove();
         if (this.stickyStyleEl) this.stickyStyleEl.remove();
+        this.clearQuoteMark();
+        if (this.quoteStyleEl) this.quoteStyleEl.remove();
         this.pending = null;
         this.buffering = false;
         this.players.clear();
@@ -360,6 +368,56 @@ class Plugin extends AppPlugin {
         await this.saveCustom({ supadataKey: key });
     }
 
+    // While a quote runs, a red recording marker sits in the status bar (a click
+    // cancels), and a reminder asks every few minutes whether to keep going.
+    // Nothing ends the quote on its own.
+    startQuoteMark(iframe, time) {
+        this.clearQuoteMark();
+        this.quoteMark = { iframe, time };
+        if (!this.quoteStyleEl) {
+            this.quoteStyleEl = document.createElement('style');
+            this.quoteStyleEl.id = 'yt-ts-quote';
+            this.quoteStyleEl.textContent = '.ytts-rec{color:#ff4d4f;font-weight:600;display:inline-flex;align-items:center;gap:4px}'
+                + '.ytts-rec .ti{animation:ytts-pulse 1.6s ease-in-out infinite}'
+                + '@keyframes ytts-pulse{50%{opacity:.3}}';
+            document.head.appendChild(this.quoteStyleEl);
+        }
+        this.quoteItem = this.ui.addStatusBarItem({
+            htmlLabel: '<span class="ytts-rec"><span class="ti ti-point-filled"></span>Quote from '
+                + this.formatTime(Math.floor(time)) + '</span>',
+            tooltip: 'Cmd+Shift+U ends the quote and inserts it. Click to cancel.',
+            onClick: () => this.clearQuoteMark(),
+        });
+        this.scheduleQuoteReminder();
+    }
+
+    scheduleQuoteReminder() {
+        clearTimeout(this.quoteRemindTimer);
+        this.quoteRemindTimer = setTimeout(() => {
+            if (!this.quoteMark) return;
+            if (this.quoteToast) this.quoteToast.destroy();
+            this.quoteToast = this.ui.addToaster({
+                title: 'Quote still running',
+                message: 'Started at ' + this.formatTime(Math.floor(this.quoteMark.time))
+                    + '. Cmd+Shift+U ends it and inserts what was said.',
+                dismissible: true,
+                primaryLabel: 'Keep going',
+                secondaryLabel: 'Cancel quote',
+                onPrimary: () => this.scheduleQuoteReminder(),
+                onSecondary: () => this.clearQuoteMark(),
+            });
+            this.scheduleQuoteReminder(); // an unanswered reminder comes back
+        }, Plugin.QUOTE_REMIND_MS);
+    }
+
+    clearQuoteMark() {
+        this.quoteMark = null;
+        clearTimeout(this.quoteRemindTimer);
+        this.quoteRemindTimer = null;
+        if (this.quoteItem) { this.quoteItem.remove(); this.quoteItem = null; }
+        if (this.quoteToast) { try { this.quoteToast.destroy(); } catch (e) {} this.quoteToast = null; }
+    }
+
     // Cmd+Shift+U marks where a quote starts; the next press ends it and inserts
     // what was said in between as a quote row at the caret
     async onQuoteKey() {
@@ -376,13 +434,11 @@ class Plugin extends AppPlugin {
             const iframe = playing ? playing[0] : this.pickPlayer(caretLine);
             if (!iframe) { this.trace('no-player'); return; }
             const s = this.players.get(iframe);
-            this.quoteMark = { iframe, time: this.nowTime(s) };
-            this.toast('Quote started at ' + this.formatTime(Math.floor(this.quoteMark.time)),
-                'Press Cmd+Shift+U again to end it and insert what was said.');
+            this.startQuoteMark(iframe, this.nowTime(s));
             this.transcriptFor(s.videoId, key).catch(() => {}); // fetch while you listen
             return;
         }
-        this.quoteMark = null;
+        this.clearQuoteMark();
         const s = this.players.get(m.iframe);
         const now = this.nowTime(s);
         // skipping back past the start still quotes the stretch between the two presses
@@ -411,7 +467,11 @@ class Plugin extends AppPlugin {
         if (!at) { this.trace('no-record'); return; }
         const item = await at.record.createLineItem(at.parent, at.anchor, 'quote');
         if (!item) { this.trace('create-row-failed'); return; }
-        item.setSegments([{ type: 'text', text }]);
+        // start and end as timestamp links, so a click jumps the player there
+        const a = Math.floor(start), b = Math.floor(end);
+        const link = (t) => ({ type: 'linkobj', text: {
+            link: 'https://www.youtube.com/watch?v=' + s.videoId + '&t=' + t + 's', title: this.formatTime(t) } });
+        item.setSegments([link(a), { type: 'text', text: ' - ' }, link(b), { type: 'text', text: ': ' + text }]);
         this.trace('quoted', { from: Math.floor(start), to: Math.floor(end), chars: text.length });
         // keep typing where you were
         try { window.g_virtual_input.$textarea.focus(); } catch (e) {}
