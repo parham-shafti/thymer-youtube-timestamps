@@ -11,8 +11,9 @@
  * Keys for the player: Cmd+Shift+Left / Right skip back / forward 10 seconds
  * while the video plays, Cmd+Shift+Space plays or pauses it.
  *
- * Cmd+Shift+U quotes what was said since the video last started playing (or
- * last jumped) as a quote row at the caret. The words come from the video's
+ * Cmd+Shift+U marks where a quote starts; the next Cmd+Shift+U ends it and
+ * inserts what was said in between as a quote row at the caret (two presses
+ * within a second cancel). The words come from the video's
  * own captions through Supadata (supadata.ai); "YouTube: Set transcript API
  * key from clipboard" in the command palette stores the key.
  *
@@ -36,7 +37,8 @@ class Plugin extends AppPlugin {
     // hotkey: Cmd+Shift+T (Mac) / Ctrl+Shift+T elsewhere
     static HOTKEY_CODE = 'KeyT';
 
-    players = new Map();   // iframe element -> { videoId, lastTime, lastAt, playing, playStart }
+    players = new Map();   // iframe element -> { videoId, lastTime, lastAt, playing }
+    quoteMark = null;      // { iframe, time } between the two Cmd+Shift+U presses
     transcripts = new Map(); // videoId -> Promise of timed caption segments
     observer = null;
     msgHandler = null;
@@ -200,7 +202,7 @@ class Plugin extends AppPlugin {
                 iframe.src = iframe.src + (iframe.src.includes('?') ? '&' : '?')
                     + 'enablejsapi=1&origin=' + location.origin;
             }
-            this.players.set(iframe, { videoId: m[1], lastTime: 0, lastAt: 0, playing: false, playStart: null });
+            this.players.set(iframe, { videoId: m[1], lastTime: 0, lastAt: 0, playing: false });
             // handshake (retry a few times while the player boots)
             let tries = 0;
             const hello = () => {
@@ -229,20 +231,11 @@ class Plugin extends AppPlugin {
                     // reports stream only while the video runs, so a moving clock means it
                     // plays even when no state arrived (a reloaded plugin gets 'alreadyInitialized')
                     if (info.currentTime !== state.lastTime && Date.now() - state.lastAt < 1500) state.playing = true;
-                    // a clock that is not where it should be has jumped (a seek, or a
-                    // restart after a pause): what plays from here is a new stretch
-                    if (state.playStart === null || Math.abs(info.currentTime - this.nowTime(state)) > 2) {
-                        state.playStart = info.currentTime;
-                    }
                     state.lastTime = info.currentTime;
                     state.lastAt = Date.now();
                 }
                 // 1 = playing, 3 = buffering (right after a seek)
-                if (info.playerState !== undefined) {
-                    const playing = info.playerState === 1 || info.playerState === 3;
-                    if (playing && !state.playing) state.playStart = state.lastTime;
-                    state.playing = playing;
-                }
+                if (info.playerState !== undefined) state.playing = info.playerState === 1 || info.playerState === 3;
                 break;
             }
         }
@@ -262,7 +255,7 @@ class Plugin extends AppPlugin {
         if (mod && e.shiftKey && !e.altKey && e.code === 'KeyU' && this.players.size) {
             e.preventDefault();
             e.stopImmediatePropagation();
-            this.insertTranscript().catch(err => this.trace('error', { msg: String(err) }));
+            this.onQuoteKey().catch(err => this.trace('error', { msg: String(err) }));
             return;
         }
         if (mod && e.shiftKey && e.code === Plugin.HOTKEY_CODE) {
@@ -334,7 +327,6 @@ class Plugin extends AppPlugin {
         this.sendCommand(iframe, 'seekTo', [t, true]);
         s.lastTime = t; // so a quick second press skips from here
         s.lastAt = Date.now();
-        s.playStart = t;
         return true;
     }
 
@@ -364,13 +356,13 @@ class Plugin extends AppPlugin {
             return;
         }
         this.transcripts.clear();
-        this.toast('Transcript API key saved', 'Cmd+Shift+U quotes what was said since you pressed play.');
+        this.toast('Transcript API key saved', 'Cmd+Shift+U starts a quote, and Cmd+Shift+U again inserts what was said.');
         await this.saveCustom({ supadataKey: key });
     }
 
-    // Cmd+Shift+U: what was said from the last play (or jump) until now, as a
-    // quote row at the caret
-    async insertTranscript() {
+    // Cmd+Shift+U marks where a quote starts; the next press ends it and inserts
+    // what was said in between as a quote row at the caret
+    async onQuoteKey() {
         const key = ((this.getConfiguration() || {}).custom || {}).supadataKey;
         if (!key) {
             this.toast('Add a transcript API key first',
@@ -378,14 +370,25 @@ class Plugin extends AppPlugin {
             return;
         }
         const caretLine = this.findCaretLine();
-        const playing = this.playingPlayer();
-        const iframe = playing ? playing[0] : this.pickPlayer(caretLine);
-        if (!iframe) { this.trace('no-player'); return; }
-        const s = this.players.get(iframe);
-        const end = this.nowTime(s);
-        const start = s.playStart === null ? end : s.playStart;
+        const m = this.quoteMark;
+        if (!m || !m.iframe.isConnected || !this.players.has(m.iframe)) {
+            const playing = this.playingPlayer();
+            const iframe = playing ? playing[0] : this.pickPlayer(caretLine);
+            if (!iframe) { this.trace('no-player'); return; }
+            const s = this.players.get(iframe);
+            this.quoteMark = { iframe, time: this.nowTime(s) };
+            this.toast('Quote started at ' + this.formatTime(Math.floor(this.quoteMark.time)),
+                'Press Cmd+Shift+U again to end it and insert what was said.');
+            this.transcriptFor(s.videoId, key).catch(() => {}); // fetch while you listen
+            return;
+        }
+        this.quoteMark = null;
+        const s = this.players.get(m.iframe);
+        const now = this.nowTime(s);
+        // skipping back past the start still quotes the stretch between the two presses
+        const start = Math.min(m.time, now), end = Math.max(m.time, now);
         if (end - start < 1) {
-            this.toast('Nothing played yet', 'Play the video, then press Cmd+Shift+U to quote what was said.');
+            this.toast('Quote cancelled', 'Less than a second was marked.');
             return;
         }
         let segs;
